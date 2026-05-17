@@ -1,5 +1,52 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
+// ─── PERSISTENCE ──────────────────────────────────────────────────────────────
+
+const SAVE_KEY = "woolsworth_v3";
+const loadSave = () => {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || null; } catch { return null; }
+};
+const writeSave = (data) => {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch {}
+};
+
+// ─── SEASONS ─────────────────────────────────────────────────────────────────
+
+const SEASONS = [
+  { id:"spring", name:"Spring", icon:"🌸", dayRange:[1,7],
+    bg:"radial-gradient(ellipse at 15% 10%, #FFE4F0 0%, #FFF8F4 55%, #F4FFF8 100%)",
+    headerBg:"linear-gradient(135deg, #A04070, #C07090)",
+    boosts:["cotton","silk","cotton_coral","silk_plum"],
+    reduced:["chunky","chunky_cream","cashmere"],
+    tip:"Light weights and fresh colours are in high demand." },
+  { id:"summer", name:"Summer", icon:"☀️", dayRange:[8,14],
+    bg:"radial-gradient(ellipse at 15% 10%, #FFF8D0 0%, #FFFFF0 55%, #F0FFF8 100%)",
+    headerBg:"linear-gradient(135deg, #906020, #C09040)",
+    boosts:["cotton","cotton_coral","silk"],
+    reduced:["chunky","chunky_cream","cashmere","merino"],
+    tip:"Cotton and lace are flying off the shelves." },
+  { id:"autumn", name:"Autumn", icon:"🍂", dayRange:[15,21],
+    bg:"radial-gradient(ellipse at 15% 10%, #FFE8D0 0%, #FFF8F0 55%, #F8F0E8 100%)",
+    headerBg:"linear-gradient(135deg, #7A3820, #B05830)",
+    boosts:["merino","alpaca","merino_rose","alpaca_fern","dyed_merino"],
+    reduced:["cotton","cotton_coral","silk"],
+    tip:"Cozy knitters are stocking up on warm earthy fibres." },
+  { id:"winter", name:"Winter", icon:"❄️", dayRange:[22,28],
+    bg:"radial-gradient(ellipse at 15% 10%, #D8E4FF 0%, #F0F4FF 55%, #E8F8FF 100%)",
+    headerBg:"linear-gradient(135deg, #304880, #5068A8)",
+    boosts:["cashmere","chunky","chunky_cream","merino_grey","dyed_merino"],
+    reduced:["cotton","cotton_coral","silk"],
+    tip:"Bulky weights and luxurious fibres are in peak demand." },
+];
+
+const getSeason = (day) => {
+  const pos = ((day - 1) % 28) + 1;
+  return SEASONS.find(s => pos >= s.dayRange[0] && pos <= s.dayRange[1]) || SEASONS[0];
+};
+
+const seasonalWeight = (yarnId, season) =>
+  season.boosts.includes(yarnId) ? 3 : season.reduced.includes(yarnId) ? 1 : 2;
+
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 
 const ALL_YARNS = [
@@ -103,21 +150,24 @@ function QtyBtn({ onClick, label, C, accent }) {
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function Woolsworth() {
-  const [money,    setMoney]    = useState(200);
-  const [day,      setDay]      = useState(1);
-  const [rep,      setRep]      = useState(22);
-  const [phase,    setPhase]    = useState("morning");
-  const [inv,      setInv]      = useState(zeroInv());
-  const [cart,     setCart]     = useState(zeroInv());
-  const [upgrades, setUpgrades] = useState(Object.fromEntries(UPGRADES_DEF.map(u=>[u.id,false])));
-  const [loyalty,  setLoyalty]  = useState(Object.fromEntries(REGULARS_DEF.map(r=>[r.id,0])));
-  const [custs,    setCusts]    = useState([]);
-  const [toSpawn,  setToSpawn]  = useState(0);
-  const [spawnCd,  setSpawnCd]  = useState(0);
-  const [stats,    setStats]    = useState({ earned:0, served:0, missed:0 });
-  const [toasts,   setToasts]   = useState([]);
-  const closingRef = useRef(false); // ref avoids re-triggering the effect on close
-  const [tab,      setTab]      = useState("stock");
+  const saved = useMemo(() => loadSave(), []);
+
+  const [money,     setMoney]    = useState(saved?.money    ?? 200);
+  const [day,       setDay]      = useState(saved?.day      ?? 1);
+  const [rep,       setRep]      = useState(saved?.rep      ?? 22);
+  const [phase,     setPhase]    = useState("morning"); // always open on morning
+  const [inv,       setInv]      = useState(() => ({ ...zeroInv(), ...(saved?.inv || {}) }));
+  const [cart,      setCart]     = useState(zeroInv());
+  const [upgrades,  setUpgrades] = useState(() => ({ ...Object.fromEntries(UPGRADES_DEF.map(u=>[u.id,false])), ...(saved?.upgrades || {}) }));
+  const [loyalty,   setLoyalty]  = useState(() => ({ ...Object.fromEntries(REGULARS_DEF.map(r=>[r.id,0])), ...(saved?.loyalty || {}) }));
+  const [custs,     setCusts]    = useState([]);
+  const [toSpawn,   setToSpawn]  = useState(0);
+  const [spawnCd,   setSpawnCd]  = useState(0);
+  const [stats,     setStats]    = useState({ earned:0, served:0, missed:0 });
+  const [soldToday, setSoldToday]= useState(zeroInv()); // tracks yarn sold this session
+  const [toasts,    setToasts]   = useState([]);
+  const closingRef = useRef(false);
+  const [tab,       setTab]      = useState("stock");
 
   // Stale-closure guards
   const custsRef  = useRef(custs);
@@ -125,6 +175,7 @@ export default function Woolsworth() {
   useEffect(() => { custsRef.current = custs; },              [custs]);
   useEffect(() => { ctxRef.current = { upgrades, rep, day }; }, [upgrades, rep, day]);
 
+  const season         = useMemo(() => getSeason(day), [day]);
   const todayEvent     = EVENTS_DEF.find(e => e.days.includes(day)) || null;
   const availableYarns = useMemo(() =>
     ALL_YARNS.filter(y => y.unlockRep <= rep && (!y.upgrade || upgrades[y.upgrade])),
@@ -183,9 +234,12 @@ export default function Woolsworth() {
       newCust = mkCust(yarn, reg.name, reg.avatar, upg.seatingNook ? 26 : 18,
         reg.project, { isRegular:reg.id, greeting:reg.greeting, tipAmount:reg.tip, amount:2 });
     } else {
+      const season = getSeason(d);
       const pool   = (ev?.premium ? avail.filter(y => y.price >= 18) : avail);
       const bucket = pool.length ? pool : avail;
-      const yarn   = bucket[Math.floor(Math.random() * bucket.length)];
+      // Weight by season: boosts get 3x, reduced get 1x, neutral get 2x
+      const weighted = bucket.flatMap(y => Array(seasonalWeight(y.id, season)).fill(y));
+      const yarn   = weighted[Math.floor(Math.random() * weighted.length)];
       newCust = mkCust(yarn,
         RAND_NAMES[Math.floor(Math.random() * RAND_NAMES.length)],
         AVATARS[Math.floor(Math.random() * AVATARS.length)],
@@ -241,6 +295,7 @@ export default function Woolsworth() {
     setMoney(m => m + earned);
     setRep(r => Math.min(100, r + (c.isRegular ? 4 : 3)));
     setStats(s => ({ ...s, earned: s.earned + earned, served: s.served + 1 }));
+    setSoldToday(s => ({ ...s, [c.yarn.id]: (s[c.yarn.id]||0) + c.amount }));
     setCusts(p => p.filter(x => x.id !== c.id));
     toast(`✨ +$${earned} — ${c.name} is delighted!${bonuses.length ? " " + bonuses.join(" ") : ""}`, "good");
   };
@@ -280,16 +335,21 @@ export default function Woolsworth() {
     setToSpawn(n);
     setSpawnCd(1.2);
     setStats({ earned:0, served:0, missed:0 });
+    setSoldToday(zeroInv());
     setPhase("open");
   };
 
   const nextDay = () => {
-    if (todayEvent) setRep(r => Math.min(100, r + todayEvent.repBonus));
+    const newRep = todayEvent ? Math.min(100, rep + todayEvent.repBonus) : rep;
+    const newDay = day + 1;
+    if (todayEvent) setRep(newRep);
     closingRef.current = false;
-    setDay(d => d + 1);
+    setDay(newDay);
     setPhase("morning");
     setCusts([]);
     setTab("stock");
+    // Persist progress
+    writeSave({ money, day: newDay, rep: newRep, inv, upgrades, loyalty });
   };
 
   // ── PALETTE ───────────────────────────────────────────────────────────────
@@ -306,7 +366,7 @@ export default function Woolsworth() {
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ minHeight:"100vh", background:"radial-gradient(ellipse at 15% 10%, #FFE4D0 0%, #FFF8F0 55%, #F8F0E8 100%)", fontFamily:bf, color:C.text }}>
+    <div style={{ minHeight:"100vh", background:season.bg, fontFamily:bf, color:C.text, transition:"background 1s" }}>
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Lato:wght@300;400;700&display=swap');
@@ -326,7 +386,7 @@ export default function Woolsworth() {
       `}</style>
 
       {/* ── HEADER ──────────────────────────────────────────────────────────── */}
-      <div style={{ background:`linear-gradient(135deg,${C.roseDk},${C.rose})`, color:"#FFF8F2", padding:"14px 28px", display:"flex", alignItems:"center", gap:22, boxShadow:"0 3px 18px rgba(100,40,60,0.3)" }}>
+      <div style={{ background:season.headerBg, color:"#FFF8F2", padding:"14px 28px", display:"flex", alignItems:"center", gap:22, boxShadow:"0 3px 18px rgba(0,0,0,0.25)", transition:"background 1s" }}>
         <div>
           <div style={{ fontFamily:hf, fontSize:22, fontWeight:700 }}>🧶 Woolsworth & Co.</div>
           <div style={{ fontSize:11, opacity:.72, textTransform:"uppercase", letterSpacing:".07em", marginTop:1 }}>Your cosy yarn shop</div>
@@ -350,6 +410,9 @@ export default function Woolsworth() {
             {todayEvent.icon} {todayEvent.name}
           </div>
         )}
+        <div style={{ background:"rgba(255,255,255,0.18)", borderRadius:20, padding:"6px 14px", fontSize:11, letterSpacing:".05em" }}>
+          {season.icon} {season.name}
+        </div>
         <div style={{ background:"rgba(255,255,255,0.18)", borderRadius:20, padding:"6px 16px", fontSize:11, textTransform:"uppercase", letterSpacing:".06em" }}>
           {phase==="morning"?"☀️ Morning":phase==="open"?"🔔 Open":"🌙 Evening"}
         </div>
@@ -378,8 +441,8 @@ export default function Woolsworth() {
             )}
 
             <div style={{ marginBottom:22 }}>
-              <h2 style={{ fontFamily:hf, fontSize:28, color:C.roseDk, marginBottom:4 }}>Good morning! ☀️</h2>
-              <p style={{ color:C.muted, fontSize:14 }}>Day {day} — you have <strong style={{ color:C.sage }}>${money}</strong> to spend before opening.</p>
+              <h2 style={{ fontFamily:hf, fontSize:28, color:C.roseDk, marginBottom:4 }}>Good morning! {season.icon}</h2>
+              <p style={{ color:C.muted, fontSize:14 }}>Day {day} · <strong style={{ color:C.text }}>{season.name}</strong> — {season.tip} You have <strong style={{ color:C.sage }}>${money}</strong> to spend.</p>
             </div>
 
             {/* Tab bar */}
@@ -393,16 +456,21 @@ export default function Woolsworth() {
             {tab==="stock" && <>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:16 }}>
                 {availableYarns.map(y=>{
-                  const isNew = y.unlockRep > 0 && rep - y.unlockRep < 8;
+                  const isNew  = y.unlockRep > 0 && rep - y.unlockRep < 8;
+                  const w      = seasonalWeight(y.id, season);
+                  const hot    = w === 3;
+                  const slow   = w === 1;
                   return (
-                    <div key={y.id} style={cardSt({ padding:"14px 16px" })}>
+                    <div key={y.id} style={cardSt({ padding:"14px 16px", outline: hot ? `2px solid ${C.gold}88` : "none" })}>
                       <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
                         <YarnBall color={y.color} size={36}/>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ display:"flex", alignItems:"center", gap:5, flexWrap:"wrap" }}>
                             <span style={{ fontFamily:hf, fontSize:13, fontWeight:600 }}>{y.name}</span>
-                            {isNew      && <span className="badge" style={{ background:"#FFE060",  color:"#8A6000" }}>New!</span>}
-                            {y.upgrade  && <span className="badge" style={{ background:"#E0D0F8",  color:"#5040A0" }}>Hand-dyed</span>}
+                            {isNew  && <span className="badge" style={{ background:"#FFE060",  color:"#8A6000" }}>New!</span>}
+                            {y.upgrade && <span className="badge" style={{ background:"#E0D0F8", color:"#5040A0" }}>Hand-dyed</span>}
+                            {hot    && <span className="badge" style={{ background:"#FFE060",  color:"#8A5000" }}>🔥 Popular</span>}
+                            {slow   && <span className="badge" style={{ background:"rgba(150,150,150,0.15)", color:C.muted }}>↓ Slow</span>}
                           </div>
                           <div style={{ fontSize:11, color:C.muted, marginTop:1 }}>{y.sub} · {y.weight}</div>
                         </div>
@@ -643,6 +711,30 @@ export default function Woolsworth() {
                   </div>
                 ))}
               </div>
+
+              {/* Daily cart */}
+              {Object.entries(soldToday).some(([,v])=>v>0) && (
+                <div style={{ marginBottom:20 }}>
+                  <div style={{ fontSize:12, color:C.muted, textTransform:"uppercase", letterSpacing:".08em", marginBottom:12, fontWeight:700 }}>🛒 Today's Sales Basket</div>
+                  <div style={{ background:C.cream, borderRadius:14, padding:"14px 16px", display:"flex", flexWrap:"wrap", gap:10 }}>
+                    {Object.entries(soldToday).filter(([,v])=>v>0).map(([id,count])=>{
+                      const y = ALL_YARNS.find(y=>y.id===id);
+                      if (!y) return null;
+                      return (
+                        <div key={id} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,0.75)", borderRadius:12, padding:"8px 12px", border:`1px solid ${y.color}44` }}>
+                          <YarnBall color={y.color} size={28}/>
+                          <div style={{ textAlign:"left" }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:C.text }}>{y.name}</div>
+                            <div style={{ fontSize:10, color:C.muted }}>{y.sub}</div>
+                          </div>
+                          <div style={{ fontSize:13, fontWeight:700, color:y.color, marginLeft:4 }}>×{count}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div style={{ background:C.cream, borderRadius:12, padding:"14px 18px", fontSize:14, color:C.muted, marginBottom:20, lineHeight:1.6, fontStyle:"italic" }}>
                 {stats.missed===0
                   ? "✨ Perfect day — every customer found exactly what they needed!"
